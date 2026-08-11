@@ -42,3 +42,20 @@ claude-hopper --path NAME        # print the resolved config dir
 
 See `bin/claude-hopper` for the full layout, options, and environment
 variables (`CLAUDE_HOPPER_ROOT`, `CLAUDE_HOPPER_SHARED`, `CLAUDE_HOPPER_BIN`).
+
+## Optional: alias `claude` to `claude-hopper`
+
+To stop a bare `claude` from silently launching the real client against the
+default `~/.claude` config, source `shell/aliases.sh` from your shell rc.
+
+On distros with a `~/.bashrc.d/` drop-in directory (RHEL, Fedora):
+
+```sh
+echo 'source /path/to/Clawed-Hopper/shell/aliases.sh' > ~/.bashrc.d/claude-aliases
+```
+
+Otherwise, append the same `source` line directly to `~/.bashrc` (or
+`~/.zshrc`).
+
+With the alias active, `claude` always requires an explicit profile:
+`claude` lists profiles, `claude work [args...]` launches the `work` profile.

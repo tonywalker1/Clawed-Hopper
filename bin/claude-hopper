@@ -1,0 +1,325 @@
+#!/usr/bin/env bash
+#
+# claude-hopper -- launch Claude Code against a named configuration profile.
+#
+# Layout (root default: $HOME/.claude):
+#
+#   ~/.claude/
+#     shared/                     content common to every profile (sync this)
+#       CLAUDE.md  skills/  commands/  agents/
+#     work/                       a profile
+#       .claude-hopper            marker: this directory is a profile
+#       CLAUDE.md -> ../shared/CLAUDE.md
+#       skills    -> ../shared/skills
+#       settings.json             real file, profile-specific
+#       .credentials.json         real file, local only
+#       projects/ todos/ ...      per-session state
+#     home/                       another profile
+#
+# Every top-level entry in shared/ is linked into each profile with a RELATIVE
+# symlink, so the links resolve wherever the tree lands. The link pass runs on
+# every launch and is idempotent: missing links are created, wrong or dangling
+# links are repaired, and a real file or directory in the profile is treated as
+# a deliberate override and left alone.
+#
+#   claude-hopper                    list profiles
+#   claude-hopper work [args...]     launch claude with the "work" profile
+#   claude-hopper --relink [NAME]    repair links only (no launch)
+#   claude-hopper --adopt NAME       mark an existing directory as a profile
+#   claude-hopper --path NAME        print the resolved config dir
+#
+# Environment:
+#   CLAUDE_HOPPER_ROOT     profile root      (default: $HOME/.claude)
+#   CLAUDE_HOPPER_SHARED   shared dir name   (default: shared)
+#   CLAUDE_HOPPER_BIN      claude executable (default: $HOME/.local/bin/claude,
+#                                             falling back to PATH)
+#
+# Exported into the child process:
+#   CLAUDE_CONFIG_DIR      the selected profile directory
+#   CLAUDE_HOPPER_PROFILE  the profile name (handy for a statusline or hook)
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+readonly PROGNAME="${0##*/}"
+readonly MARKER='.claude-hopper'          # marks a directory as a profile
+readonly IGNORE='.claude-hopper-ignore'   # marks a directory as not a profile
+
+# Per-profile state and identity. Never linked out of shared/, even if someone
+# drops one of these into the shared tree by mistake.
+readonly NEVER_LINK=(
+    '.credentials.json' '.claude.json' '.claude.json.backup'
+    'settings.local.json' 'projects' 'todos' 'shell-snapshots'
+    'statsig' 'ide' 'debug' 'file-history' 'history.jsonl'
+)
+
+HOPPER_ROOT="${CLAUDE_HOPPER_ROOT:-${HOME}/.claude}"
+SHARED_NAME="${CLAUDE_HOPPER_SHARED:-shared}"
+CLAUDE_BIN="${CLAUDE_HOPPER_BIN:-${HOME}/.local/bin/claude}"
+allow_create=1
+do_link=1
+verbose=0
+
+die() {
+    printf '%s: error: %s\n' "$PROGNAME" "$*" >&2
+    exit 1
+}
+
+note() {
+    printf '%s: %s\n' "$PROGNAME" "$*" >&2
+}
+
+chat() {
+    ((verbose)) && note "$*"
+    return 0
+}
+
+usage() {
+    cat <<EOF
+Usage:
+  $PROGNAME                       list available profiles
+  $PROGNAME [-n] NAME [ARG...]    launch claude with profile NAME
+  $PROGNAME --relink [NAME]       create/repair shared links, then exit
+  $PROGNAME --adopt NAME          treat an existing directory as a profile
+  $PROGNAME --path NAME           print the config dir for NAME
+
+Options:
+  -l, --list        list profiles and exit
+  -n, --no-create   fail instead of creating a missing profile
+  -L, --no-link     skip the shared-link pass for this launch
+  -v, --verbose     report links that were already correct or overridden
+  -h, --help        this message
+
+Everything after NAME is passed through to claude untouched, e.g.
+  $PROGNAME work --resume
+  $PROGNAME home -p 'summarize this repo'
+
+Profile root: $HOPPER_ROOT
+Shared dir:   $HOPPER_ROOT/$SHARED_NAME
+EOF
+}
+
+is_profile() {
+    [[ -f "$1/$MARKER" ]]
+}
+
+valid_name() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
+profile_dir() {
+    printf '%s/%s' "$HOPPER_ROOT" "$1"
+}
+
+shared_dir() {
+    printf '%s/%s' "$HOPPER_ROOT" "$SHARED_NAME"
+}
+
+never_link() {
+    local name="$1" reserved
+    for reserved in "${NEVER_LINK[@]}"; do
+        [[ "$name" == "$reserved" ]] && return 0
+    done
+    return 1
+}
+
+# Create or repair relative symlinks from shared/ into one profile. Idempotent:
+# safe to run on every launch, and safe to run from Ansible.
+ensure_links() {
+    local dir="$1" shared src dest name target current
+    shared="$(shared_dir)"
+    [[ -d "$shared" ]] || return 0
+
+    shopt -s nullglob dotglob
+    for src in "$shared"/*; do
+        name="${src##*/}"
+        case "$name" in
+            '.git'|'.gitignore'|"$MARKER"|"$IGNORE") continue ;;
+        esac
+        if never_link "$name"; then
+            note "refusing to link per-profile state from $SHARED_NAME/: $name"
+            continue
+        fi
+
+        target="../${SHARED_NAME}/${name}"
+        dest="${dir}/${name}"
+
+        if [[ -L "$dest" ]]; then
+            current="$(readlink "$dest")"
+            if [[ "$current" == "$target" ]]; then
+                chat "ok: $name"
+            else
+                ln -sfn "$target" "$dest"
+                note "repaired link: $name (was -> $current)"
+            fi
+        elif [[ -e "$dest" ]]; then
+            chat "override: $name is a real file or directory here, leaving it"
+        else
+            ln -s "$target" "$dest"
+            note "linked: $name -> $target"
+        fi
+    done
+    shopt -u nullglob dotglob
+}
+
+# Profile names in listing order. A directory counts only if it carries the
+# marker, which keeps claude's own state directories -- and shared/ -- out.
+enumerate_profiles() {
+    local dir name
+    shopt -s nullglob
+    for dir in "$HOPPER_ROOT"/*/; do
+        dir="${dir%/}"
+        name="${dir##*/}"
+        [[ "$name" == "$SHARED_NAME" ]] && continue
+        [[ -e "$dir/$IGNORE" ]] && continue
+        is_profile "$dir" && printf '%s\n' "$name"
+    done
+    shopt -u nullglob
+}
+
+list_profiles() {
+    [[ -d "$HOPPER_ROOT" ]] || die "profile root does not exist: $HOPPER_ROOT"
+
+    local -a profiles=() strays=()
+    local dir name
+
+    mapfile -t profiles < <(enumerate_profiles)
+
+    shopt -s nullglob
+    for dir in "$HOPPER_ROOT"/*/; do
+        dir="${dir%/}"
+        name="${dir##*/}"
+        [[ "$name" == "$SHARED_NAME" ]] && continue
+        [[ -e "$dir/$IGNORE" ]] && continue
+        is_profile "$dir" && continue
+        if [[ -e "$dir/settings.json" || -e "$dir/.claude.json" || -e "$dir/.credentials.json" ]]; then
+            strays+=("$name")
+        fi
+    done
+    shopt -u nullglob
+
+    if ((${#profiles[@]})); then
+        printf 'Profiles in %s:\n' "$HOPPER_ROOT"
+        printf '  %s\n' "${profiles[@]}"
+    else
+        printf 'No profiles in %s (create one with: %s NAME)\n' "$HOPPER_ROOT" "$PROGNAME"
+    fi
+
+    [[ -d "$(shared_dir)" ]] && printf '\nShared content: %s\n' "$(shared_dir)"
+
+    if ((${#strays[@]})); then
+        printf '\nUnregistered config directories (adopt with: %s --adopt NAME):\n' "$PROGNAME"
+        printf '  %s\n' "${strays[@]}"
+    fi
+}
+
+relink() {
+    local name="${1:-}"
+    local -a names=()
+    if [[ -n "$name" ]]; then
+        valid_name "$name" || die "invalid profile name: $name"
+        is_profile "$(profile_dir "$name")" || die "not a profile: $name"
+        names=("$name")
+    else
+        mapfile -t names < <(enumerate_profiles)
+        ((${#names[@]})) || die "no profiles in $HOPPER_ROOT"
+    fi
+    verbose=1
+    for name in "${names[@]}"; do
+        note "--- $name"
+        ensure_links "$(profile_dir "$name")"
+    done
+}
+
+adopt_profile() {
+    local name="$1" dir
+    valid_name "$name" || die "invalid profile name: $name"
+    [[ "$name" == "$SHARED_NAME" ]] && die "$name is the shared directory, not a profile"
+    dir="$(profile_dir "$name")"
+    [[ -d "$dir" ]] || die "no such directory: $dir"
+    if is_profile "$dir"; then
+        note "already a profile: $name"
+    else
+        printf 'adopted by %s\n' "$PROGNAME" >"$dir/$MARKER"
+        chmod 700 "$dir"
+        note "adopted profile: $name ($dir)"
+    fi
+    ensure_links "$dir"
+}
+
+create_profile() {
+    local name="$1" dir
+    dir="$(profile_dir "$name")"
+    mkdir -p -m 700 "$dir"
+    printf 'created by %s\n' "$PROGNAME" >"$dir/$MARKER"
+    note "created new profile: $name ($dir)"
+    note "you will need to authenticate this profile on first run"
+}
+
+resolve_claude() {
+    if [[ -x "$CLAUDE_BIN" ]]; then
+        printf '%s' "$CLAUDE_BIN"
+        return 0
+    fi
+    local found
+    if found="$(command -v claude 2>/dev/null)"; then
+        printf '%s' "$found"
+        return 0
+    fi
+    die "claude executable not found (tried '$CLAUDE_BIN' and \$PATH); set CLAUDE_HOPPER_BIN"
+}
+
+main() {
+    local profile=''
+
+    while (($#)); do
+        case "$1" in
+            -h|--help)      usage; return 0 ;;
+            -l|--list)      list_profiles; return 0 ;;
+            -n|--no-create) allow_create=0; shift ;;
+            -L|--no-link)   do_link=0; shift ;;
+            -v|--verbose)   verbose=1; shift ;;
+            --relink)       relink "${2:-}"; return 0 ;;
+            --adopt)        [[ ${2:-} ]] || die "--adopt requires a profile name"
+                            adopt_profile "$2"; return 0 ;;
+            --path)         [[ ${2:-} ]] || die "--path requires a profile name"
+                            valid_name "$2" || die "invalid profile name: $2"
+                            profile_dir "$2"; echo; return 0 ;;
+            --)             shift; break ;;
+            -*)             die "unknown option: $1 (see --help)" ;;
+            *)              break ;;
+        esac
+    done
+
+    if (($# == 0)); then
+        list_profiles
+        return 0
+    fi
+
+    profile="$1"
+    shift
+    valid_name "$profile" || die "invalid profile name: $profile"
+    [[ "$profile" == "$SHARED_NAME" ]] && die "$profile is the shared directory, not a profile"
+
+    local dir
+    dir="$(profile_dir "$profile")"
+
+    if [[ ! -d "$dir" ]]; then
+        ((allow_create)) || die "no such profile: $profile"
+        create_profile "$profile"
+    elif ! is_profile "$dir"; then
+        die "$dir exists but is not a registered profile; run '$PROGNAME --adopt $profile' if that is really a Claude Code config directory"
+    fi
+
+    ((do_link)) && ensure_links "$dir"
+
+    local bin
+    bin="$(resolve_claude)"
+
+    export CLAUDE_CONFIG_DIR="$dir"
+    export CLAUDE_HOPPER_PROFILE="$profile"
+    exec "$bin" "$@"
+}
+
+main "$@"

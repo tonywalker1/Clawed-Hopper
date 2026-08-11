@@ -1,0 +1,2 @@
+# Route `claude` through claude-hopper; see ~/Development/Clawed-Hopper
+source /home/tony/Development/Clawed-Hopper/shell/aliases.sh

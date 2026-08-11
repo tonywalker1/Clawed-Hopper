@@ -30,6 +30,10 @@ state (credentials, sessions, settings) is never linked out of `shared/`.
 ./install.sh /some/dir    # or another directory on your PATH
 ```
 
+If `~/.bashrc.d/` exists (RHEL, Fedora), `install.sh` also symlinks
+`shell/bashrc.d/claude-aliases` in as a drop-in, enabling the `claude` alias
+below. Re-running `install.sh` is safe; it repairs both symlinks.
+
 ## Usage
 
 ```sh
@@ -48,14 +52,13 @@ variables (`CLAUDE_HOPPER_ROOT`, `CLAUDE_HOPPER_SHARED`, `CLAUDE_HOPPER_BIN`).
 To stop a bare `claude` from silently launching the real client against the
 default `~/.claude` config, source `shell/aliases.sh` from your shell rc.
 
-On distros with a `~/.bashrc.d/` drop-in directory (RHEL, Fedora):
+On `~/.bashrc.d/` systems, `install.sh` sets this up for you (see Install
+above). Otherwise, append the `source` line directly to `~/.bashrc` (or
+`~/.zshrc`):
 
 ```sh
-echo 'source /path/to/Clawed-Hopper/shell/aliases.sh' > ~/.bashrc.d/claude-aliases
+echo 'source /path/to/Clawed-Hopper/shell/aliases.sh' >> ~/.bashrc
 ```
-
-Otherwise, append the same `source` line directly to `~/.bashrc` (or
-`~/.zshrc`).
 
 With the alias active, `claude` always requires an explicit profile:
 `claude` lists profiles, `claude work [args...]` launches the `work` profile.

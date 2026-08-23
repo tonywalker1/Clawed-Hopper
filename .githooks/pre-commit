@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#
+# Reject commits that introduce absolute home directory paths.
+# Enable with: git config core.hooksPath .githooks
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR)
+((${#staged[@]} > 0)) || exit 0
+
+exec "$repo_root/tools/check-paths.sh" "${staged[@]}"

@@ -62,3 +62,21 @@ echo 'source /path/to/Clawed-Hopper/shell/aliases.sh' >> ~/.bashrc
 
 With the alias active, `claude` always requires an explicit profile:
 `claude` lists profiles, `claude work [args...]` launches the `work` profile.
+
+## Development
+
+Enable the repo's git hooks once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+The `pre-commit` hook runs `tools/check-paths.sh`, which rejects absolute home
+directory paths (`/home/<user>/...`, `/Users/<user>/...`) in tracked files —
+they are machine-specific and break every other checkout. Use `$HOME`, resolve
+`${BASH_SOURCE[0]}`, or write a `/path/to/Clawed-Hopper` placeholder instead.
+Run it over the whole tree at any time:
+
+```sh
+./tools/check-paths.sh
+```

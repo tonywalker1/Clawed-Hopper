@@ -1,2 +1,12 @@
-# Route `claude` through claude-hopper; see ~/Development/Clawed-Hopper
-source /home/tony/Development/Clawed-Hopper/shell/aliases.sh
+# Route `claude` through claude-hopper. Installed by Clawed-Hopper's install.sh
+# as a symlink at ~/.bashrc.d/claude-aliases, so resolve the link to find the
+# repo rather than hard-coding a path.
+
+_claude_hopper_drop_in="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+    _claude_hopper_drop_in="$(readlink -f "$_claude_hopper_drop_in" 2>/dev/null || printf '%s' "$_claude_hopper_drop_in")"
+fi
+if [[ -r "${_claude_hopper_drop_in%/*}/../aliases.sh" ]]; then
+    source "${_claude_hopper_drop_in%/*}/../aliases.sh"
+fi
+unset _claude_hopper_drop_in

@@ -15,12 +15,20 @@
 #       .credentials.json         real file, local only
 #       projects/ todos/ ...      per-session state
 #     home/                       another profile
+#     ide/                        IDE lock files, common to every profile
 #
 # Every top-level entry in shared/ is linked into each profile with a RELATIVE
 # symlink, so the links resolve wherever the tree lands. The link pass runs on
 # every launch and is idempotent: missing links are created, wrong or dangling
 # links are repaired, and a real file or directory in the profile is treated as
 # a deliberate override and left alone.
+#
+# ide/ is the exception to "per-profile state". An IDE extension writes its lock
+# file to the config dir of the environment it was started from -- usually the
+# default ~/.claude -- while a profile's session looks in its own. Each profile's
+# ide is therefore linked to ../ide, so a session in any profile can attach
+# (/ide) to any running IDE. It is linked to the root rather than kept in
+# shared/ because a lock file carries an auth token, and shared/ is synced.
 #
 #   claude-hopper                    list profiles
 #   claude-hopper work [args...]     launch claude with the "work" profile
@@ -45,6 +53,7 @@ set -o pipefail
 readonly PROGNAME="${0##*/}"
 readonly MARKER='.claude-hopper'          # marks a directory as a profile
 readonly IGNORE='.claude-hopper-ignore'   # marks a directory as not a profile
+readonly COMMON_NAME='ide'                # root-level state every profile links to
 
 # Per-profile state and identity. Never linked out of shared/, even if someone
 # drops one of these into the shared tree by mistake.
@@ -124,10 +133,38 @@ never_link() {
     return 1
 }
 
+# Link a profile's ide/ to the root-level one. An empty real directory -- which
+# claude creates on first run -- is replaced; a non-empty one is left alone and
+# reported, since it silently keeps that profile from seeing any IDE.
+ensure_common_link() {
+    local dir="$1" target="../${COMMON_NAME}" dest current
+    dest="${dir}/${COMMON_NAME}"
+    mkdir -p -m 700 "${HOPPER_ROOT}/${COMMON_NAME}"
+
+    if [[ -L "$dest" ]]; then
+        current="$(readlink "$dest")"
+        if [[ "$current" == "$target" ]]; then
+            chat "ok: $COMMON_NAME"
+        else
+            ln -sfn "$target" "$dest"
+            note "repaired link: $COMMON_NAME (was -> $current)"
+        fi
+    elif [[ -d "$dest" ]] && rmdir "$dest" 2>/dev/null; then
+        ln -s "$target" "$dest"
+        note "linked: $COMMON_NAME -> $target (replaced empty directory)"
+    elif [[ -e "$dest" ]]; then
+        note "not linking $COMMON_NAME: $dest is a non-empty directory or a file"
+    else
+        ln -s "$target" "$dest"
+        note "linked: $COMMON_NAME -> $target"
+    fi
+}
+
 # Create or repair relative symlinks from shared/ into one profile. Idempotent:
 # safe to run on every launch, and safe to run from Ansible.
 ensure_links() {
     local dir="$1" shared src dest name target current
+    ensure_common_link "$dir"
     shared="$(shared_dir)"
     [[ -d "$shared" ]] || return 0
 
@@ -236,6 +273,7 @@ adopt_profile() {
     local name="$1" dir
     valid_name "$name" || die "invalid profile name: $name"
     [[ "$name" == "$SHARED_NAME" ]] && die "$name is the shared directory, not a profile"
+    [[ "$name" == "$COMMON_NAME" ]] && die "$name is reserved for IDE lock files, not a profile"
     dir="$(profile_dir "$name")"
     [[ -d "$dir" ]] || die "no such directory: $dir"
     if is_profile "$dir"; then
@@ -301,6 +339,7 @@ main() {
     shift
     valid_name "$profile" || die "invalid profile name: $profile"
     [[ "$profile" == "$SHARED_NAME" ]] && die "$profile is the shared directory, not a profile"
+    [[ "$profile" == "$COMMON_NAME" ]] && die "$profile is reserved for IDE lock files, not a profile"
 
     local dir
     dir="$(profile_dir "$profile")"

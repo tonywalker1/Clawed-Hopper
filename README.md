@@ -17,11 +17,20 @@ skills, commands, and agents via symlinks.
     settings.json             real file, profile-specific
     .credentials.json         real file, local only
     projects/ todos/ ...      per-session state
+    ide -> ../ide
   home/                       another profile
+  ide/                        IDE lock files, common to every profile
 ```
 
 Every top-level entry in `shared/` is symlinked into each profile. Per-profile
 state (credentials, sessions, settings) is never linked out of `shared/`.
+
+The one exception is `ide/`, where IDE extensions write the lock files that
+`/ide` uses to find a running editor. An extension writes to the config dir it
+was started with -- normally the default `~/.claude` -- so each profile's `ide`
+is linked to `~/.claude/ide`, letting a session in any profile attach to any
+running IDE. It lives at the root rather than in `shared/` because lock files
+carry auth tokens and `shared/` is meant to be synced.
 
 ## Install
 

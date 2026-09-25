@@ -55,6 +55,11 @@ readonly MARKER='.claude-hopper'          # marks a directory as a profile
 readonly IGNORE='.claude-hopper-ignore'   # marks a directory as not a profile
 readonly COMMON_NAME='ide'                # root-level state every profile links to
 
+# Words that name one of this script's own commands. A profile is selected by a
+# bare word and created if missing, so without this `claude-hopper list` quietly
+# makes a profile called "list" and launches claude in it.
+readonly COMMAND_WORDS=(list help relink adopt path)
+
 # Per-profile state and identity. Never linked out of shared/, even if someone
 # drops one of these into the shared tree by mistake.
 readonly NEVER_LINK=(
@@ -115,6 +120,18 @@ is_profile() {
 
 valid_name() {
     [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
+# Die unless NAME may be used as a profile.
+check_profile_name() {
+    local name="$1" word
+    valid_name "$name" || die "invalid profile name: $name"
+    [[ "$name" == "$SHARED_NAME" ]] && die "$name is the shared directory, not a profile"
+    [[ "$name" == "$COMMON_NAME" ]] && die "$name is reserved for IDE lock files, not a profile"
+    for word in "${COMMAND_WORDS[@]}"; do
+        [[ "$name" == "$word" ]] && die "'$name' is a command, not a profile; did you mean --$name?"
+    done
+    return 0
 }
 
 profile_dir() {
@@ -271,9 +288,7 @@ relink() {
 
 adopt_profile() {
     local name="$1" dir
-    valid_name "$name" || die "invalid profile name: $name"
-    [[ "$name" == "$SHARED_NAME" ]] && die "$name is the shared directory, not a profile"
-    [[ "$name" == "$COMMON_NAME" ]] && die "$name is reserved for IDE lock files, not a profile"
+    check_profile_name "$name"
     dir="$(profile_dir "$name")"
     [[ -d "$dir" ]] || die "no such directory: $dir"
     if is_profile "$dir"; then
@@ -337,9 +352,7 @@ main() {
 
     profile="$1"
     shift
-    valid_name "$profile" || die "invalid profile name: $profile"
-    [[ "$profile" == "$SHARED_NAME" ]] && die "$profile is the shared directory, not a profile"
-    [[ "$profile" == "$COMMON_NAME" ]] && die "$profile is reserved for IDE lock files, not a profile"
+    check_profile_name "$profile"
 
     local dir
     dir="$(profile_dir "$profile")"

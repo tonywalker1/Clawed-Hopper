@@ -53,6 +53,10 @@ claude-hopper --adopt NAME       # mark an existing directory as a profile
 claude-hopper --path NAME        # print the resolved config dir
 ```
 
+A profile cannot be named `shared`, `ide`, or after one of the commands above
+(`list`, `help`, `relink`, `adopt`, `path`), so `claude-hopper list` is refused
+with a pointer to `--list` rather than creating a profile called "list".
+
 See `bin/claude-hopper` for the full layout, options, and environment
 variables (`CLAUDE_HOPPER_ROOT`, `CLAUDE_HOPPER_SHARED`, `CLAUDE_HOPPER_BIN`).
 
